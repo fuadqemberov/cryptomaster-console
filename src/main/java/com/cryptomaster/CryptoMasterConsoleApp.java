@@ -1,8 +1,8 @@
 package com.cryptomaster;
 
-import com.cryptomaster.client.CoinGeckoClient;
+import com.cryptomaster.client.BinanceRestClient;
+import com.cryptomaster.client.BinanceWebSocketClient;
 import com.cryptomaster.config.AppConfig;
-import com.cryptomaster.dto.coingecko.CoinMarket;
 import com.cryptomaster.model.AnalysisResult;
 import com.cryptomaster.model.Kline;
 import com.cryptomaster.model.TradingSignal;
@@ -16,31 +16,32 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @SpringBootApplication
 public class CryptoMasterConsoleApp implements CommandLineRunner {
     private static final Logger log = LoggerFactory.getLogger(CryptoMasterConsoleApp.class);
 
-    private final CoinGeckoClient coinGeckoClient;
+    private final BinanceRestClient binanceRestClient;
+    private final BinanceWebSocketClient binanceWebSocketClient;
     private final TechnicalAnalysisService analysisService;
     private final SignalGenerationService signalService;
     private final ConsoleReportService reportService;
     private final AppConfig appConfig;
 
-    // Stablecoin ve özel token'lar (analiz edilmeyecek)
-    private static final Set<String> EXCLUDED_IDS = Set.of(
-            "tether", "usd-coin", "binance-usd", "dai", "true-usd",
-            "leo-token", "staked-ether", "wrapped-bitcoin", "weth",
-            "ethena-usde", "first-digital-usd", "usual-usd"
-    );
-
-    public CryptoMasterConsoleApp(CoinGeckoClient coinGeckoClient,
+    private static final Set<String> EXCLUDED_SYMBOLS = new HashSet<>(List.of(
+            "USDCUSDT", "BUSDUSDT", "DAIUSDT", "TUSDUSDT", "USDPUSDT",
+            "FDUSDUSDT", "USDDUSDT", "USDJUSDT", "USTCUSDT"
+    ));
+    public CryptoMasterConsoleApp(BinanceRestClient binanceRestClient,
+                                  BinanceWebSocketClient binanceWebSocketClient,
                                   TechnicalAnalysisService analysisService,
                                   SignalGenerationService signalService,
                                   ConsoleReportService reportService,
                                   AppConfig appConfig) {
-        this.coinGeckoClient = coinGeckoClient;
+        this.binanceRestClient = binanceRestClient;
+        this.binanceWebSocketClient = binanceWebSocketClient;
         this.analysisService = analysisService;
         this.signalService = signalService;
         this.reportService = reportService;
@@ -53,128 +54,164 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws InterruptedException {
-        log.info("╔══════════════════════════════════════════════╗");
-        log.info("║   🚀 CRYPTOMASTER CONSOLE BOT BAŞLADI        ║");
-        log.info("║   📊 {} Coin | Batch: {} | Bekleme: {}sn    ║",
-                appConfig.getTopCoinCount(), appConfig.getBatchSize(), appConfig.getBatchWaitSeconds());
-        log.info("╚══════════════════════════════════════════════╝\n");
+        log.info("╔══════════════════════════════════════════════════╗");
+        log.info("║   🚀 CRYPTOMASTER BINANCE WEBSOCKET BOT          ║");
+        log.info("║   📊 {} Coin | ⚡ Gerçek Zamanlı Analiz         ║", appConfig.getTopCoinCount());
+        log.info("╚══════════════════════════════════════════════════╝\n");
 
-        while (true) {
-            // ============ ADIM 1: Coin Listesini Çek ============
-            List<CoinMarket> allCoins = fetchCoinList();
-            if (allCoins.isEmpty()) {
-                log.warn("❌ Coin listesi alınamadı. 60 saniye bekleniyor...");
-                Thread.sleep(60_000);
-                continue;
-            }
+        // ============ ADIM 1: Tüm USDT çiftlerini al ============
+        Map<String, Double> allPairs = binanceRestClient.getAllUSDTPairs();
 
-            // Stablecoin'leri filtrele
-            List<CoinMarket> filteredCoins = allCoins.stream()
-                    .filter(coin -> !EXCLUDED_IDS.contains(coin.getId()))
-                    .limit(appConfig.getTopCoinCount())
-                    .collect(Collectors.toList());
+        // Filtrele ve sembolleri al
+        List<String> symbols = allPairs.keySet().stream()
+                .filter(sym -> !EXCLUDED_SYMBOLS.contains(sym))
+                .limit(appConfig.getTopCoinCount())
+                .toList();
 
-            log.info("✅ {} coin analiz edilecek (stablecoin'ler filtrelendi)", filteredCoins.size());
+        log.info("🎯 {} sembol analiz edilecek.", symbols.size());
+        log.info("📡 WebSocket bağlantısı başlatılıyor...\n");
 
-            // Sembol -> ID eşlemesi
-            Map<String, String> symbolToId = new LinkedHashMap<>();
-            for (CoinMarket coin : filteredCoins) {
-                String symbol = coin.getSymbol().toUpperCase() + "USDT";
-                symbolToId.put(symbol, coin.getId());
-            }
+        // ============ ADIM 2: WebSocket bağlantısını başlat ============
+        binanceWebSocketClient.connect(symbols);
 
-            // ============ ADIM 2: Batch'ler Halinde Analiz ============
-            List<TradingSignal> allSignals = new ArrayList<>();
-            List<Map.Entry<String, String>> entries = new ArrayList<>(symbolToId.entrySet());
-            int batchSize = appConfig.getBatchSize();
-            int totalBatches = (int) Math.ceil((double) entries.size() / batchSize);
+        // ============ ADIM 3: Geçmiş veriyi REST'ten çek (ilk doldurma) ============
+        log.info("📊 Geçmiş OHLC verileri çekiliyor...");
+        Map<String, Map<String, List<Kline>>> allKlineData = new ConcurrentHashMap<>();
 
-            for (int batch = 0; batch < totalBatches; batch++) {
-                int start = batch * batchSize;
-                int end = Math.min(start + batchSize, entries.size());
-                List<Map.Entry<String, String>> batchEntries = entries.subList(start, end);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<?>> futures = new ArrayList<>();
+            AtomicInteger completed = new AtomicInteger(0);
 
-                log.info("\n📦 Batch {}/{} başlıyor ({} coin)", batch + 1, totalBatches, batchEntries.size());
-                log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-                for (int i = 0; i < batchEntries.size(); i++) {
-                    Map.Entry<String, String> entry = batchEntries.get(i);
-                    String symbol = entry.getKey();
-                    String coinId = entry.getValue();
-                    int globalIndex = start + i + 1;
-
+            for (String symbol : symbols) {
+                futures.add(executor.submit(() -> {
                     try {
-                        // OHLC verilerini çek
-                        List<Kline> ohlc1h = coinGeckoClient.getOHLC(coinId, 1);
-                        if (ohlc1h == null || ohlc1h.isEmpty()) {
-                            log.warn("⚠️ {}/{} {} OHLC(1gün) verisi yok, atlanıyor", globalIndex, entries.size(), symbol);
-                            continue;
+                        Map<String, List<Kline>> symbolKlines = new ConcurrentHashMap<>();
+                        for (String interval : appConfig.getOhlcIntervals()) {
+                            List<Kline> klines = binanceRestClient.getKlines(symbol, interval, appConfig.getOhlcLimit());
+                            if (!klines.isEmpty()) {
+                                symbolKlines.put(interval, klines);
+                            }
                         }
-
-                        List<Kline> ohlc4h = coinGeckoClient.getOHLC(coinId, 7);
-                        if (ohlc4h == null || ohlc4h.isEmpty()) {
-                            log.warn("⚠️ {}/{} {} OHLC(7gün) verisi yok, atlanıyor", globalIndex, entries.size(), symbol);
-                            continue;
+                        if (!symbolKlines.isEmpty()) {
+                            allKlineData.put(symbol, symbolKlines);
                         }
-
-                        List<Kline> ohlc1d = coinGeckoClient.getOHLC(coinId, 30);
-                        if (ohlc1d == null || ohlc1d.isEmpty()) {
-                            log.warn("⚠️ {}/{} {} OHLC(30gün) verisi yok, atlanıyor", globalIndex, entries.size(), symbol);
-                            continue;
+                        int done = completed.incrementAndGet();
+                        if (done % 50 == 0) {
+                            log.info("   ⏳ {}/{} sembol yüklendi...", done, symbols.size());
                         }
-
-                        Map<String, List<Kline>> klinesByInterval = new LinkedHashMap<>();
-                        klinesByInterval.put("1h", ohlc1h);
-                        klinesByInterval.put("4h", ohlc4h);
-                        klinesByInterval.put("1d", ohlc1d);
-
-                        // Güncel fiyat
-                        double currentPrice = filteredCoins.stream()
-                                .filter(c -> coinId.equals(c.getId()))
-                                .findFirst()
-                                .map(CoinMarket::getCurrentPrice)
-                                .orElse(0.0);
-
-                        // Analiz ve sinyal
-                        AnalysisResult analysis = analysisService.analyze(symbol, klinesByInterval);
-                        TradingSignal signal = signalService.generateSignal(symbol, currentPrice, analysis);
-
-                        reportService.printDetailedReport(signal);
-                        allSignals.add(signal);
-
-                        log.info("✅ {}/{} {} analiz edildi (Güven: %{})",
-                                globalIndex, entries.size(), symbol, signal.getConfidence());
-
                     } catch (Exception e) {
-                        log.error("❌ {}/{} {} HATA: {}", globalIndex, entries.size(), symbol, e.getMessage());
+                        log.error("❌ {} veri çekme hatası: {}", symbol, e.getMessage());
+                    }
+                }));
+            }
+
+            // Tüm işlemlerin bitmesini bekle
+            for (Future<?> future : futures) {
+                try {
+                    future.get(30, TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    log.warn("⚠️ Zaman aşımı, devam ediliyor...");
+                } catch (ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+
+        log.info("✅ {} sembol için geçmiş veri yüklendi.\n", allKlineData.size());
+
+        // ============ ADIM 4: Ana Analiz Döngüsü ============
+        while (true) {
+            log.info("╔══════════════════════════════════════════════════╗");
+            log.info("║  🔍 ANALİZ BAŞLADI                              ║");
+            log.info("╚══════════════════════════════════════════════════╝");
+
+            // WebSocket'ten gelen canlı veriyi al
+            Map<String, Map<String, List<Kline>>> liveKlineData = binanceWebSocketClient.getKlineCache();
+            Map<String, Double> livePrices = binanceWebSocketClient.getPriceCache();
+
+            // Geçmiş veri ile canlı veriyi birleştir
+            for (Map.Entry<String, Map<String, List<Kline>>> entry : liveKlineData.entrySet()) {
+                String symbol = entry.getKey();
+                Map<String, List<Kline>> liveData = entry.getValue();
+                if (allKlineData.containsKey(symbol) && liveData.containsKey("1m")) {
+                    allKlineData.get(symbol).put("1m", liveData.get("1m"));
+                }
+            }
+
+            // ============ ADIM 5: Paralel Analiz (Virtual Thread) ============
+            List<TradingSignal> allSignals = new CopyOnWriteArrayList<>();
+            AtomicInteger analyzedCount = new AtomicInteger(0);
+            int totalSymbols = allKlineData.size();
+
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                List<Future<?>> futures = new ArrayList<>();
+
+                for (Map.Entry<String, Map<String, List<Kline>>> entry : allKlineData.entrySet()) {
+                    String symbol = entry.getKey();
+                    Map<String, List<Kline>> klineMap = entry.getValue();
+
+                    futures.add(executor.submit(() -> {
+                        try {
+                            double currentPrice = livePrices.getOrDefault(symbol, 0.0);
+
+                            // Sadece 1h, 4h, 1d verilerini kullan
+                            Map<String, List<Kline>> analysisData = new LinkedHashMap<>();
+                            if (klineMap.containsKey("1h")) analysisData.put("1h", klineMap.get("1h"));
+                            if (klineMap.containsKey("4h")) analysisData.put("4h", klineMap.get("4h"));
+                            if (klineMap.containsKey("1d")) analysisData.put("1d", klineMap.get("1d"));
+
+                            if (analysisData.isEmpty()) return;
+
+                            AnalysisResult analysis = analysisService.analyze(symbol, analysisData);
+                            TradingSignal signal = signalService.generateSignal(symbol, currentPrice, analysis);
+
+                            if (signal.getDirection().equals("LONG") || signal.getDirection().equals("SHORT")) {
+                                allSignals.add(signal);
+                            }
+
+                            int done = analyzedCount.incrementAndGet();
+                            if (done % 50 == 0) {
+                                log.info("   ⏳ {}/{} sembol analiz edildi...", done, totalSymbols);
+                            }
+                        } catch (Exception e) {
+                            log.error("❌ {} analiz hatası: {}", symbol, e.getMessage());
+                            analyzedCount.incrementAndGet();
+                        }
+                    }));
+                }
+
+                // Bekle
+                for (Future<?> future : futures) {
+                    try {
+                        future.get(10, TimeUnit.SECONDS);
+                    } catch (TimeoutException | ExecutionException e) {
+                        // Devam et
                     }
                 }
-
-                // Batch arası bekleme (rate limit için)
-                if (batch < totalBatches - 1) {
-                    int waitSec = appConfig.getBatchWaitSeconds();
-                    log.info("\n⏳ Rate limit koruması: {} saniye bekleniyor...", waitSec);
-                    Thread.sleep(waitSec * 1000L);
-                }
             }
 
-            // ============ ADIM 3: Özet Tablo ============
+            // ============ ADIM 6: Sonuçları Sırala ve Raporla ============
+            allSignals.sort((a, b) -> {
+                if (a.getDirection().equals(b.getDirection())) {
+                    return Integer.compare(b.getConfidence(), a.getConfidence());
+                }
+                return a.getDirection().compareTo(b.getDirection());
+            });
+
+            // İlk 30 sinyali detaylı göster
+            log.info("\n📊 EN GÜÇLÜ 30 SİNYAL:");
+            log.info("═══════════════════════════════════════════════════");
+            allSignals.stream().limit(30).forEach(reportService::printDetailedReport);
+
+            // Tüm sinyallerin özet tablosu
             reportService.printAllCoinsReport(allSignals);
 
-            // ============ ADIM 4: Ana Döngü Bekleme ============
-            log.info("\n🔄 Tüm coin'ler analiz edildi. 5 dakika sonra tekrarlanacak...");
-            log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-            Thread.sleep(5 * 60 * 1000);
-        }
-    }
+            log.info("\n✅ {} sembol analiz edildi, {} sinyal bulundu.",
+                    totalSymbols, allSignals.size());
+            log.info("⏳ {} saniye sonra yeni analiz...\n",
+                    appConfig.getAnalysisIntervalSeconds());
 
-    private List<CoinMarket> fetchCoinList() {
-        try {
-            log.info("📡 CoinGecko'dan ilk {} coin çekiliyor...", appConfig.getTopCoinCount());
-            return coinGeckoClient.getTopCoins(250); // 250 çek, filtrele sonra 100'e düşür
-        } catch (Exception e) {
-            log.error("❌ Coin listesi alınamadı: {}", e.getMessage());
-            return Collections.emptyList();
+            Thread.sleep(appConfig.getAnalysisIntervalSeconds() * 1000L);
         }
     }
 }

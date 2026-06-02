@@ -3,17 +3,19 @@ package com.cryptomaster.model;
 import java.time.Instant;
 
 public class Kline {
-    private long timestamp;
+    private long openTime;
     private double open;
     private double high;
     private double low;
     private double close;
     private double volume;
+    private long closeTime;
+    private String interval; // 1m, 5m, 1h, etc.
 
     public Kline() {}
 
-    public Kline(long timestamp, double open, double high, double low, double close, double volume) {
-        this.timestamp = timestamp;
+    public Kline(long openTime, double open, double high, double low, double close, double volume) {
+        this.openTime = openTime;
         this.open = open;
         this.high = high;
         this.low = low;
@@ -21,10 +23,11 @@ public class Kline {
         this.volume = volume;
     }
 
-    public long getTimestamp() { return timestamp; }
-    public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
+    // Getter & Setter'lar (hepsi)
+    public long getOpenTime() { return openTime; }
+    public void setOpenTime(long openTime) { this.openTime = openTime; }
 
-    public Instant getInstant() { return Instant.ofEpochMilli(timestamp); }
+    public Instant getInstant() { return Instant.ofEpochMilli(openTime); }
 
     public double getOpen() { return open; }
     public void setOpen(double open) { this.open = open; }
@@ -40,4 +43,10 @@ public class Kline {
 
     public double getVolume() { return volume; }
     public void setVolume(double volume) { this.volume = volume; }
+
+    public long getCloseTime() { return closeTime; }
+    public void setCloseTime(long closeTime) { this.closeTime = closeTime; }
+
+    public String getInterval() { return interval; }
+    public void setInterval(String interval) { this.interval = interval; }
 }
