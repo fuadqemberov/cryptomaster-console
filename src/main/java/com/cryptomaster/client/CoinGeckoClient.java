@@ -7,10 +7,12 @@ import com.cryptomaster.util.RateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -24,7 +26,6 @@ public class CoinGeckoClient {
     private final RateLimiter rateLimiter;
     private final Map<String, List<Kline>> cache = new ConcurrentHashMap<>();
 
-    // ✅ baseUrl artık doğrudan kullanılıyor
     public CoinGeckoClient(WebClient.Builder webClientBuilder,
                            @Value("${coingecko.api.base-url}") String baseUrl,
                            @Value("${coingecko.api.rate-limit-ms}") long rateLimitMs) {
@@ -45,8 +46,8 @@ public class CoinGeckoClient {
                         .queryParam("sparkline", false)
                         .build())
                 .retrieve()
-                .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
-                        response -> Mono.error(new CoinGeckoException("API hatası: " + response.statusCode())))
+                .onStatus(HttpStatusCode::isError, response ->
+                        Mono.error(new CoinGeckoException("Coin listesi hatası: " + response.statusCode())))
                 .bodyToFlux(CoinMarket.class)
                 .collectList()
                 .block();
@@ -62,17 +63,21 @@ public class CoinGeckoClient {
         rateLimiter.acquire();
         log.info("{} için {} günlük OHLC verisi çekiliyor...", coinId, days);
 
-        List<List<Object>> raw = webClient.get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/coins/{id}/ohlc")          // sadece yol
-                        .queryParam("vs_currency", "usd")
-                        .queryParam("days", days)
-                        .build(coinId))                     // değişken buraya
-                .retrieve()
-                .onStatus(status -> !status.is2xxSuccessful(),
-                        response -> Mono.error(new CoinGeckoException("OHLC alınamadı: " + coinId)))
-                .bodyToMono(List.class)
-                .block();
+        List<List<Object>> raw = retryOnRateLimit(() ->
+                webClient.get()
+                        .uri(uriBuilder -> uriBuilder
+                                .path("/coins/{id}/ohlc")
+                                .queryParam("vs_currency", "usd")
+                                .queryParam("days", days)
+                                .build(coinId))
+                        .retrieve()
+                        .onStatus(status -> status.value() == 429,
+                                response -> Mono.error(new CoinGeckoException("Rate limit aşıldı")))
+                        .onStatus(HttpStatusCode::isError,
+                                response -> Mono.error(new CoinGeckoException("OHLC hatası: " + response.statusCode())))
+                        .bodyToMono(List.class)
+                        .block()
+        );
 
         if (raw == null || raw.isEmpty()) return Collections.emptyList();
 
@@ -97,5 +102,29 @@ public class CoinGeckoClient {
                 .retrieve()
                 .bodyToMono(Map.class)
                 .block();
+    }
+
+    // --- Rate‑limit retry helper ---
+    private <T> T retryOnRateLimit(SupplierWithException<T> supplier) {
+        int maxRetries = 3;
+        for (int i = 0; i < maxRetries; i++) {
+            try {
+                return supplier.get();
+            } catch (CoinGeckoException e) {
+                if (e.getMessage().contains("Rate limit aşıldı")) {
+                    long sleepMs = (long) (Math.pow(2, i) * 2000); // 2, 4, 8 saniye
+                    log.warn("Rate limit aşıldı, {} ms bekleniyor...", sleepMs);
+                    try { Thread.sleep(sleepMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                } else {
+                    throw e; // diğer hataları direkt fırlat
+                }
+            }
+        }
+        throw new CoinGeckoException("Rate limit aşıldı, " + maxRetries + " deneme başarısız.");
+    }
+
+    @FunctionalInterface
+    interface SupplierWithException<T> {
+        T get() throws CoinGeckoException;
     }
 }

@@ -15,6 +15,8 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 @SpringBootApplication
@@ -47,44 +49,57 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
     public void run(String... args) throws InterruptedException {
         log.info("=== CRYPTOMASTER CONSOLE BOT BAŞLADI (CoinGecko) ===");
 
-        // Coin listesini al (ilk 50)
-        List<CoinMarket> topCoins = coinGeckoClient.getTopCoins(50);
-        List<String> watchlist = new ArrayList<>(appConfig.getCoins()); // BTCUSDT,ETHUSDT,...
-        // Eğer config'de yoksa top 50'den ilk 10'u ekleyelim (örnek)
-        if (watchlist.isEmpty()) {
-            topCoins.stream().limit(10).forEach(c -> watchlist.add(c.getSymbol().toUpperCase() + "USDT"));
-        }
-
-        // Sonsuz döngü
         while (true) {
+            int topCoinCount = appConfig.getTopCoinCount();
+            log.info("📊 CoinGecko'dan ilk {} coin çekiliyor...", topCoinCount);
+            List<CoinMarket> topCoins = coinGeckoClient.getTopCoins(topCoinCount);
+
+            if (topCoins == null || topCoins.isEmpty()) {
+                log.warn("❌ Coin listesi alınamadı, 1 dakika bekleniyor...");
+                Thread.sleep(60_000);
+                continue;
+            }
+
+            Map<String, String> symbolToId = new LinkedHashMap<>();
+            for (CoinMarket coin : topCoins) {
+                String symbol = coin.getSymbol().toUpperCase() + "USDT";
+                symbolToId.put(symbol, coin.getId());
+            }
+
             List<TradingSignal> allSignals = new ArrayList<>();
-            for (String symbol : watchlist) {
+            int coinIndex = 0;
+            for (Map.Entry<String, String> entry : symbolToId.entrySet()) {
+                coinIndex++;
+                String symbol = entry.getKey();
+                String coinId = entry.getValue();
+
                 try {
-                    String coinId = symbol.replace("USDT", "").toLowerCase(); // basit eşleştirme
-                    // OHLC verilerini çek
                     Map<String, List<Kline>> klinesByInterval = new LinkedHashMap<>();
                     klinesByInterval.put("1h", coinGeckoClient.getOHLC(coinId, 1));
                     klinesByInterval.put("4h", coinGeckoClient.getOHLC(coinId, 7));
                     klinesByInterval.put("1d", coinGeckoClient.getOHLC(coinId, 30));
 
-                    // Analiz
+                    double currentPrice = topCoins.stream()
+                            .filter(c -> coinId.equals(c.getId()))
+                            .findFirst()
+                            .map(CoinMarket::getCurrentPrice)
+                            .orElse(0.0);
+
                     AnalysisResult analysis = analysisService.analyze(symbol, klinesByInterval);
-
-                    // Güncel fiyat
-                    double currentPrice = coinGeckoClient.getTopCoins(1).stream()
-                            .filter(c -> symbol.equalsIgnoreCase(c.getSymbol() + "USDT"))
-                            .findFirst().map(CoinMarket::getCurrentPrice).orElse(0.0);
-
                     TradingSignal signal = signalService.generateSignal(symbol, currentPrice, analysis);
+
                     reportService.printDetailedReport(signal);
                     allSignals.add(signal);
+
+                    log.info("✅ {}/{} {} analiz edildi.", coinIndex, symbolToId.size(), symbol);
                 } catch (Exception e) {
-                    log.error("{} analiz edilemedi: {}", symbol, e.getMessage());
+                    log.error("❌ {}/{} {} analiz edilemedi: {}", coinIndex, symbolToId.size(), symbol, e.getMessage());
                 }
             }
-            reportService.printAllCoinsReport(allSignals);
 
-            log.info("⏳ Sonraki analiz 5 dakika sonra...\n");
+            reportService.printAllCoinsReport(allSignals);
+            log.info("\n⏳ Sonraki analiz 5 dakika sonra... ({})",
+                    LocalTime.now().plusMinutes(5).truncatedTo(ChronoUnit.SECONDS));
             Thread.sleep(5 * 60 * 1000);
         }
     }

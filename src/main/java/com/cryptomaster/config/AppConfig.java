@@ -1,19 +1,22 @@
 package com.cryptomaster.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
 
 @Configuration
-@ConfigurationProperties(prefix = "cryptomaster")
 public class AppConfig {
+    @Value("${cryptomaster.top-coin-count:50}")  // varsayılan 50
+    private int topCoinCount;
+
+    @Value("${cryptomaster.coins:}") // boş bırakılabilir
     private List<String> coins;
+
+    @Value("${cryptomaster.intervals:1h,4h,1d}")
     private List<String> intervals;
 
+    public int getTopCoinCount() { return topCoinCount; }
     public List<String> getCoins() { return coins; }
-    public void setCoins(List<String> coins) { this.coins = coins; }
-
     public List<String> getIntervals() { return intervals; }
-    public void setIntervals(List<String> intervals) { this.intervals = intervals; }
 }
