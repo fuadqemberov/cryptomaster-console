@@ -6,19 +6,19 @@ import org.ta4j.core.BaseBarSeries;
 import org.ta4j.core.BarSeries;
 
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.List;
 
 public class KlineConverter {
 
-    /**
-     * Kline listesini TA4J BarSeries'e dönüştürür.
-     */
     public static BarSeries convertToBarSeries(List<Kline> klines) {
         BaseBarSeries series = new BaseBarSeries();
         for (Kline kline : klines) {
+            ZonedDateTime dateTime = kline.getInstant().atZone(ZoneId.systemDefault());
             series.addBar(new BaseBar(
-                    Duration.ofHours(1), // CoinGecko OHLC günlük ise 1 günlük kabul edilebilir, burada şimdilik 1 saat
-                    kline.getInstant(),
+                    Duration.ofHours(1),  // zaman aralığı (örnek)
+                    dateTime,             // ZonedDateTime
                     kline.getOpen(),
                     kline.getHigh(),
                     kline.getLow(),

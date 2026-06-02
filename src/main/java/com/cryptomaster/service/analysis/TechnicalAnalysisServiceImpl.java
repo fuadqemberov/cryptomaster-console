@@ -11,7 +11,9 @@ import org.springframework.stereotype.Service;
 import org.ta4j.core.Bar;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.indicators.*;
+import org.ta4j.core.indicators.adx.ADXIndicator;
 import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
+import org.ta4j.core.indicators.statistics.StandardDeviationIndicator;
 
 import java.util.*;
 
@@ -85,8 +87,8 @@ public class TechnicalAnalysisServiceImpl implements TechnicalAnalysisService {
         if (isDoji(curr)) patterns.add(CandlePattern.DOJI);
 
         double body = Math.abs(curr.getClosePrice().doubleValue() - curr.getOpenPrice().doubleValue());
-        double lowerShadow = curr.getMinPrice().doubleValue();
-        double upperShadow = curr.getMaxPrice().doubleValue() - Math.max(curr.getOpenPrice().doubleValue(), curr.getClosePrice().doubleValue());
+        double lowerShadow = curr.getLowPrice().doubleValue();
+        double upperShadow = curr.getHighPrice().doubleValue() - Math.max(curr.getOpenPrice().doubleValue(), curr.getClosePrice().doubleValue());
         if (lowerShadow > body * 2 && upperShadow < body * 0.3) patterns.add(CandlePattern.HAMMER);
         if (upperShadow > body * 2 && lowerShadow < body * 0.3) patterns.add(CandlePattern.SHOOTING_STAR);
 

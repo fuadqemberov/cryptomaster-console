@@ -11,7 +11,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -25,18 +24,14 @@ public class CoinGeckoClient {
     private final RateLimiter rateLimiter;
     private final Map<String, List<Kline>> cache = new ConcurrentHashMap<>();
 
-    @Value("${coingecko.api.base-url}")
-    private String baseUrl;
-
+    // ✅ baseUrl artık doğrudan kullanılıyor
     public CoinGeckoClient(WebClient.Builder webClientBuilder,
+                           @Value("${coingecko.api.base-url}") String baseUrl,
                            @Value("${coingecko.api.rate-limit-ms}") long rateLimitMs) {
         this.webClient = webClientBuilder.baseUrl(baseUrl).build();
         this.rateLimiter = new RateLimiter(rateLimitMs);
     }
 
-    /**
-     * En yüksek piyasa değerine sahip ilk `count` coin’i döner.
-     */
     public List<CoinMarket> getTopCoins(int count) {
         rateLimiter.acquire();
         log.info("CoinGecko'dan ilk {} coin çekiliyor...", count);
@@ -57,9 +52,6 @@ public class CoinGeckoClient {
                 .block();
     }
 
-    /**
-     * Belirli bir coin için OHLC verisi çeker (gün sayısı: 1, 7, 30 vs.)
-     */
     public List<Kline> getOHLC(String coinId, int days) {
         String cacheKey = coinId + "_" + days;
         if (cache.containsKey(cacheKey)) {
@@ -69,12 +61,13 @@ public class CoinGeckoClient {
 
         rateLimiter.acquire();
         log.info("{} için {} günlük OHLC verisi çekiliyor...", coinId, days);
+
         List<List<Object>> raw = webClient.get()
                 .uri(uriBuilder -> uriBuilder
-                        .path("/coins/{id}/ohlc", coinId)
+                        .path("/coins/{id}/ohlc")          // sadece yol
                         .queryParam("vs_currency", "usd")
                         .queryParam("days", days)
-                        .build())
+                        .build(coinId))                     // değişken buraya
                 .retrieve()
                 .onStatus(status -> !status.is2xxSuccessful(),
                         response -> Mono.error(new CoinGeckoException("OHLC alınamadı: " + coinId)))
@@ -91,15 +84,12 @@ public class CoinGeckoClient {
             double high = ((Number) ohlc.get(2)).doubleValue();
             double low = ((Number) ohlc.get(3)).doubleValue();
             double close = ((Number) ohlc.get(4)).doubleValue();
-            klines.add(new Kline(timestamp, open, high, low, close, 0)); // CoinGecko'da volume yok, 0 verdik
+            klines.add(new Kline(timestamp, open, high, low, close, 0));
         }
         cache.put(cacheKey, klines);
         return klines;
     }
 
-    /**
-     * Coin id'sine göre güncel fiyat vb. bilgileri döner.
-     */
     public Map<String, Object> getCoinById(String coinId) {
         rateLimiter.acquire();
         return webClient.get()
