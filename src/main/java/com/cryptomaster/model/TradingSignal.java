@@ -12,6 +12,7 @@ public class TradingSignal {
     private double tp1;
     private double tp2;
     private int confidence;       // 0–100
+    private int leverage;         // önerilen kaldıraç (1x, 2x, 3x, 5x, 10x)
     private String summary;
     private List<String> reasons;
     private LocalDateTime timestamp;
@@ -19,7 +20,7 @@ public class TradingSignal {
     public TradingSignal() {}
 
     public TradingSignal(String symbol, String direction, double currentPrice, double entry,
-                         double stopLoss, double tp1, double tp2, int confidence,
+                         double stopLoss, double tp1, double tp2, int confidence, int leverage,
                          String summary, List<String> reasons, LocalDateTime timestamp) {
         this.symbol = symbol;
         this.direction = direction;
@@ -29,11 +30,13 @@ public class TradingSignal {
         this.tp1 = tp1;
         this.tp2 = tp2;
         this.confidence = confidence;
+        this.leverage = leverage;
         this.summary = summary;
         this.reasons = reasons;
         this.timestamp = timestamp;
     }
 
+    // Getter ve Setter'lar (hepsi)
     public String getSymbol() { return symbol; }
     public void setSymbol(String symbol) { this.symbol = symbol; }
 
@@ -57,6 +60,9 @@ public class TradingSignal {
 
     public int getConfidence() { return confidence; }
     public void setConfidence(int confidence) { this.confidence = confidence; }
+
+    public int getLeverage() { return leverage; }
+    public void setLeverage(int leverage) { this.leverage = leverage; }
 
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
