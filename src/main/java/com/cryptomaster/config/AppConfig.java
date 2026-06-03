@@ -19,7 +19,7 @@ public class AppConfig {
     @Value("${binance.rest.base-url}")
     private String binanceRestBaseUrl;
 
-    @Value("${binance.ohlc-intervals:1m,5m,15m,1h,4h,1d}")
+    @Value("${binance.ohlc-intervals:1h,4h,1d}")
     private List<String> ohlcIntervals;
 
     @Value("${binance.ohlc-limit:100}")

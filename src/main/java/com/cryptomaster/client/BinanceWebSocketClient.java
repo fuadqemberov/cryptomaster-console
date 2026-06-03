@@ -40,13 +40,18 @@ public class BinanceWebSocketClient {
         return new ConcurrentHashMap<>(priceCache);
     }
 
+    // Canlı izlenecek (ve analiz edilen) zaman dilimleri
+    private static final List<String> WS_INTERVALS = List.of("1h", "4h", "1d");
+
     public void connect(List<String> symbols) {
         // Tüm semboller için stream adlarını oluştur
         List<String> streams = new ArrayList<>();
         for (String symbol : symbols) {
             String lowSymbol = symbol.toLowerCase();
-            streams.add(lowSymbol + "@kline_1m");  // 1 dakikalık mum
-            streams.add(lowSymbol + "@trade");      // anlık fiyat
+            for (String interval : WS_INTERVALS) {
+                streams.add(lowSymbol + "@kline_" + interval);  // 1h / 4h / 1d mum
+            }
+            streams.add(lowSymbol + "@trade");                  // anlık fiyat
         }
 
         // Her seferde 50 stream bağlansın (Binance limiti)
@@ -55,7 +60,7 @@ public class BinanceWebSocketClient {
             int end = Math.min(i + batchSize, streams.size());
             List<String> batch = streams.subList(i, end);
             String streamParam = String.join("/", batch);
-            String wsUrl = appConfig.getBinanceWsBaseUrl() + "/" + streamParam;
+            String wsUrl = appConfig.getBinanceWsBaseUrl() + "?streams=" + streamParam;
 
             WebSocketClient client = new ReactorNettyWebSocketClient();
             client.execute(URI.create(wsUrl), session -> {
@@ -89,7 +94,10 @@ public class BinanceWebSocketClient {
 
     private void processKlineMessage(String streamName, JsonNode data) {
         try {
-            String symbol = streamName.replace("@kline_1m", "").toUpperCase();
+            // streamName örn: "btcusdt@kline_4h"
+            int idx = streamName.indexOf("@kline_");
+            String symbol = streamName.substring(0, idx).toUpperCase();
+            String interval = streamName.substring(idx + "@kline_".length());
             JsonNode kline = data.get("k");
 
             long openTime = kline.get("t").asLong();
@@ -102,16 +110,16 @@ public class BinanceWebSocketClient {
 
             Kline newKline = new Kline(openTime, open, high, low, close, volume);
             newKline.setCloseTime(closeTime);
-            newKline.setInterval("1m");
+            newKline.setInterval(interval);
 
             klineCache.computeIfAbsent(symbol, k -> new ConcurrentHashMap<>());
-            klineCache.get(symbol).computeIfAbsent("1m", k -> Collections.synchronizedList(new ArrayList<>()));
+            klineCache.get(symbol).computeIfAbsent(interval, k -> Collections.synchronizedList(new ArrayList<>()));
 
-            List<Kline> klines = klineCache.get(symbol).get("1m");
+            List<Kline> klines = klineCache.get(symbol).get(interval);
             // Aynı mumu tekrar ekleme (openTime'a göre kontrol)
             if (klines.isEmpty() || klines.get(klines.size() - 1).getOpenTime() != openTime) {
                 klines.add(newKline);
-                // 100'den fazla mum tutma
+                // 200'den fazla mum tutma
                 if (klines.size() > 200) {
                     klines.remove(0);
                 }

@@ -30,36 +30,65 @@ public class BinanceRestClient {
         this.rateLimiter = new RateLimiter(200); // 200ms bekleme
     }
 
+    // Stablecoin / sarmalanmış token gibi istenmeyen kuyruklar (hacmi yüksek ama sinyal için anlamsız)
+    private static final List<String> UNWANTED_SUFFIXES = List.of(
+            "UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT"
+    );
+    private static final Set<String> STABLECOIN_BASES = Set.of(
+            "USDCUSDT", "BUSDUSDT", "DAIUSDT", "TUSDUSDT", "USDPUSDT",
+            "FDUSDUSDT", "USDDUSDT", "USDJUSDT", "USTCUSDT", "EURUSDT", "AEURUSDT"
+    );
+
     /**
-     * Tüm USDT çiftlerini ve son fiyatlarını getirir
+     * Tüm USDT çiftlerini 24 saatlik USDT (quote) hacmine göre sıralayıp,
+     * en yüksek hacimli (en popüler / likit) top N tanesini getirir.
+     * Yüksek hacim = aktif işlem gören coin → delist olmuş coinler otomatik elenir.
      */
     public Map<String, Double> getAllUSDTPairs() {
         rateLimiter.acquire();
-        log.info("📡 Binance'den tüm USDT çiftleri çekiliyor...");
+        log.info("📡 Binance'den 24s ticker verileri çekiliyor (hacme göre sıralanacak)...");
 
+        // /api/v3/ticker/24hr → lastPrice + quoteVolume içerir
         List<JsonNode> tickers = webClient.get()
-                .uri("/api/v3/ticker/price")
+                .uri("/api/v3/ticker/24hr")
                 .retrieve()
                 .bodyToFlux(JsonNode.class)
                 .collectList()
                 .block();
 
-        Map<String, Double> result = new LinkedHashMap<>();
-        if (tickers != null) {
-            for (JsonNode ticker : tickers) {
-                String symbol = ticker.get("symbol").asText();
-                if (symbol.endsWith("USDT")) {
-                    double price = ticker.get("price").asDouble();
-                    result.put(symbol, price);
-                }
-            }
+        if (tickers == null) {
+            log.warn("⚠️ Ticker verisi alınamadı.");
+            return new LinkedHashMap<>();
         }
 
-        // Hacme göre sırala ve top N al
-        log.info("✅ {} USDT çifti bulundu. İlk {} tanesi alınıyor...", result.size(), appConfig.getTopCoinCount());
-        return result.entrySet().stream()
+        // Her sembol için (symbol, price, quoteVolume) topla + filtrele
+        record Pair(String symbol, double price, double quoteVolume) {}
+
+        List<Pair> pairs = tickers.stream()
+                .filter(t -> {
+                    String s = t.get("symbol").asText();
+                    if (!s.endsWith("USDT")) return false;
+                    if (STABLECOIN_BASES.contains(s)) return false;
+                    return UNWANTED_SUFFIXES.stream().noneMatch(s::endsWith);
+                })
+                .map(t -> new Pair(
+                        t.get("symbol").asText(),
+                        t.get("lastPrice").asDouble(),
+                        t.get("quoteVolume").asDouble()   // USDT cinsinden 24s hacim
+                ))
+                .filter(p -> p.quoteVolume() > 0)          // işlem görmeyen / pasif çiftleri ele
+                .sorted(Comparator.comparingDouble(Pair::quoteVolume).reversed())
                 .limit(appConfig.getTopCoinCount())
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
+                .toList();
+
+        log.info("✅ {} USDT çifti içinden hacme göre en yüksek {} tanesi seçildi.",
+                tickers.size(), pairs.size());
+
+        Map<String, Double> result = new LinkedHashMap<>();
+        for (Pair p : pairs) {
+            result.put(p.symbol(), p.price());
+        }
+        return result;
     }
 
     /**
