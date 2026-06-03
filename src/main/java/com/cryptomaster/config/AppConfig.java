@@ -22,11 +22,25 @@ public class AppConfig {
     @Value("${binance.ohlc-intervals:1h,4h,1d}")
     private List<String> ohlcIntervals;
 
-    @Value("${binance.ohlc-limit:100}")
+    @Value("${binance.ohlc-limit:300}")
     private int ohlcLimit;
 
     @Value("${cryptomaster.analysis-interval-seconds:300}")
     private int analysisIntervalSeconds;
+
+    // ---- Futures / türev ayarları ----
+    @Value("${binance.futures.rest.base-url:https://fapi.binance.com}")
+    private String binanceFuturesRestBaseUrl;
+
+    @Value("${binance.futures.ws.base-url:wss://fstream.binance.com/ws}")
+    private String binanceFuturesWsBaseUrl;
+
+    @Value("${cryptomaster.derivatives-enabled:true}")
+    private boolean derivativesEnabled;
+
+    // Türev verisi çok çağrı gerektirir; sadece en yüksek hacimli ilk N sembol için çekilir
+    @Value("${cryptomaster.derivatives-top-count:80}")
+    private int derivativesTopCount;
 
     // Getter'lar
     public int getTopCoinCount() { return topCoinCount; }
@@ -36,4 +50,8 @@ public class AppConfig {
     public List<String> getOhlcIntervals() { return ohlcIntervals; }
     public int getOhlcLimit() { return ohlcLimit; }
     public int getAnalysisIntervalSeconds() { return analysisIntervalSeconds; }
+    public String getBinanceFuturesRestBaseUrl() { return binanceFuturesRestBaseUrl; }
+    public String getBinanceFuturesWsBaseUrl() { return binanceFuturesWsBaseUrl; }
+    public boolean isDerivativesEnabled() { return derivativesEnabled; }
+    public int getDerivativesTopCount() { return derivativesTopCount; }
 }

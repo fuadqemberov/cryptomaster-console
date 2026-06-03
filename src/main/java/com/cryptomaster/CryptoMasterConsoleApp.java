@@ -2,8 +2,13 @@ package com.cryptomaster;
 
 import com.cryptomaster.client.BinanceRestClient;
 import com.cryptomaster.client.BinanceWebSocketClient;
+import com.cryptomaster.client.BinanceFuturesClient;
+import com.cryptomaster.client.LiquidationWebSocketClient;
+import com.cryptomaster.client.FearGreedClient;
 import com.cryptomaster.config.AppConfig;
 import com.cryptomaster.model.AnalysisResult;
+import com.cryptomaster.model.DerivativesData;
+import com.cryptomaster.model.MarketContext;
 import com.cryptomaster.model.Kline;
 import com.cryptomaster.model.TradingSignal;
 import com.cryptomaster.service.analysis.TechnicalAnalysisService;
@@ -29,6 +34,9 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
     private final SignalGenerationService signalService;
     private final ConsoleReportService reportService;
     private final AppConfig appConfig;
+    private final BinanceFuturesClient binanceFuturesClient;
+    private final LiquidationWebSocketClient liquidationWebSocketClient;
+    private final FearGreedClient fearGreedClient;
 
     private static final Set<String> EXCLUDED_SYMBOLS = new HashSet<>(List.of(
             "USDCUSDT", "BUSDUSDT", "DAIUSDT", "TUSDUSDT", "USDPUSDT",
@@ -39,13 +47,19 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
                                   TechnicalAnalysisService analysisService,
                                   SignalGenerationService signalService,
                                   ConsoleReportService reportService,
-                                  AppConfig appConfig) {
+                                  AppConfig appConfig,
+                                  BinanceFuturesClient binanceFuturesClient,
+                                  LiquidationWebSocketClient liquidationWebSocketClient,
+                                  FearGreedClient fearGreedClient) {
         this.binanceRestClient = binanceRestClient;
         this.binanceWebSocketClient = binanceWebSocketClient;
         this.analysisService = analysisService;
         this.signalService = signalService;
         this.reportService = reportService;
         this.appConfig = appConfig;
+        this.binanceFuturesClient = binanceFuturesClient;
+        this.liquidationWebSocketClient = liquidationWebSocketClient;
+        this.fearGreedClient = fearGreedClient;
     }
 
     public static void main(String[] args) {
@@ -73,6 +87,15 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
 
         // ============ ADIM 2: WebSocket bağlantısını başlat ============
         binanceWebSocketClient.connect(symbols);
+
+        // Likidasyon stream'ini başlat (tüm piyasa)
+        if (appConfig.isDerivativesEnabled()) {
+            liquidationWebSocketClient.connect();
+        }
+
+        // Türev verisi çekilecek sembol kümesi (en yüksek hacimli ilk N)
+        Set<String> derivativeSymbols = new HashSet<>(
+                symbols.subList(0, Math.min(appConfig.getDerivativesTopCount(), symbols.size())));
 
         // ============ ADIM 3: Geçmiş veriyi REST'ten çek (ilk doldurma) ============
         log.info("📊 Geçmiş OHLC verileri çekiliyor...");
@@ -129,13 +152,58 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
             Map<String, Map<String, List<Kline>>> liveKlineData = binanceWebSocketClient.getKlineCache();
             Map<String, Double> livePrices = binanceWebSocketClient.getPriceCache();
 
-            // Geçmiş veri ile canlı veriyi birleştir
+            // Geçmiş (REST) veriyi koru, sadece en güncel canlı mumu güncelle/ekle
             for (Map.Entry<String, Map<String, List<Kline>>> entry : liveKlineData.entrySet()) {
                 String symbol = entry.getKey();
                 Map<String, List<Kline>> liveData = entry.getValue();
-                if (allKlineData.containsKey(symbol) && liveData.containsKey("1m")) {
-                    allKlineData.get(symbol).put("1m", liveData.get("1m"));
+                if (!allKlineData.containsKey(symbol)) continue;
+
+                for (String interval : appConfig.getOhlcIntervals()) {
+                    List<Kline> liveList = liveData.get(interval);
+                    List<Kline> baseList = allKlineData.get(symbol).get(interval);
+                    if (liveList == null || liveList.isEmpty() || baseList == null || baseList.isEmpty()) continue;
+
+                    Kline lastLive = liveList.get(liveList.size() - 1);
+                    List<Kline> merged = new ArrayList<>(baseList);
+                    Kline lastBase = merged.get(merged.size() - 1);
+
+                    if (lastBase.getOpenTime() == lastLive.getOpenTime()) {
+                        merged.set(merged.size() - 1, lastLive);       // oluşan mumu güncelle
+                    } else if (lastLive.getOpenTime() > lastBase.getOpenTime()) {
+                        merged.add(lastLive);                           // yeni kapanmış mum ekle
+                        if (merged.size() > appConfig.getOhlcLimit()) merged.remove(0);
+                    }
+                    allKlineData.get(symbol).put(interval, merged);
                 }
+            }
+
+            // ============ ADIM 4.5: Global bağlam + türev verileri ============
+            MarketContext context = buildMarketContext(allKlineData);
+            Map<String, DerivativesData> derivativesMap = new ConcurrentHashMap<>();
+            if (appConfig.isDerivativesEnabled()) {
+                log.info("💹 Türev verileri çekiliyor ({} sembol)...", derivativeSymbols.size());
+                Map<String, Double> fundingRates = binanceFuturesClient.getAllFundingRates();
+                try (ExecutorService dExec = Executors.newVirtualThreadPerTaskExecutor()) {
+                    List<Future<?>> dFutures = new ArrayList<>();
+                    for (String sym : derivativeSymbols) {
+                        if (!allKlineData.containsKey(sym)) continue;
+                        dFutures.add(dExec.submit(() -> {
+                            DerivativesData dd = binanceFuturesClient.getDerivatives(
+                                    sym, fundingRates.getOrDefault(sym, 0.0));
+                            double[] liq = liquidationWebSocketClient.getLiquidations(sym);
+                            dd.setLiqLongUsd(liq[0]);
+                            dd.setLiqShortUsd(liq[1]);
+                            if (liq[0] + liq[1] > 0) dd.setValid(true);
+                            derivativesMap.put(sym, dd);
+                        }));
+                    }
+                    for (Future<?> f : dFutures) {
+                        try { f.get(20, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                    }
+                }
+                log.info("✅ {} sembol için türev verisi alındı. (F&G: {} / BTC: {})",
+                        derivativesMap.size(), (int) context.getFearGreed(),
+                        context.getBtcRegime() > 0 ? "boğa" : context.getBtcRegime() < 0 ? "ayı" : "nötr");
             }
 
             // ============ ADIM 5: Paralel Analiz (Virtual Thread) ============
@@ -163,7 +231,8 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
                             if (analysisData.isEmpty()) return;
 
                             AnalysisResult analysis = analysisService.analyze(symbol, analysisData);
-                            TradingSignal signal = signalService.generateSignal(symbol, currentPrice, analysis);
+                            DerivativesData dd = derivativesMap.get(symbol);
+                            TradingSignal signal = signalService.generateSignal(symbol, currentPrice, analysis, dd, context);
 
                             if (signal.getDirection().equals("LONG") || signal.getDirection().equals("SHORT")) {
                                 allSignals.add(signal);
@@ -213,5 +282,30 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
 
             Thread.sleep(appConfig.getAnalysisIntervalSeconds() * 1000L);
         }
+    }
+
+    /** Fear&Greed + BTC 1d rejimi ile global bağlam üretir. */
+    private MarketContext buildMarketContext(Map<String, Map<String, List<Kline>>> allKlineData) {
+        MarketContext ctx = new MarketContext();
+        try {
+            double[] fg = fearGreedClient.fetchValue();
+            ctx.setFearGreed(fg[0]);
+            if (fg[1] == 1) ctx.setFearGreedLabel(fearGreedClient.fetchLabel());
+        } catch (Exception ignored) {}
+
+        try {
+            Map<String, List<Kline>> btc = allKlineData.get("BTCUSDT");
+            if (btc != null && btc.containsKey("1d")) {
+                Map<String, List<Kline>> data = new LinkedHashMap<>();
+                data.put("1d", btc.get("1d"));
+                AnalysisResult ar = analysisService.analyze("BTCUSDT", data);
+                AnalysisResult.TimeframeAnalysis tf = ar.getTimeframeAnalyses().get("1d");
+                if (tf != null) {
+                    if ("UPTREND".equals(tf.getTrend())) ctx.setBtcRegime(1);
+                    else if ("DOWNTREND".equals(tf.getTrend())) ctx.setBtcRegime(-1);
+                }
+            }
+        } catch (Exception ignored) {}
+        return ctx;
     }
 }
