@@ -61,6 +61,16 @@ public class TradingSignal {
     public int getConfidence() { return confidence; }
     public void setConfidence(int confidence) { this.confidence = confidence; }
 
+    /**
+     * Sinyalin kendi yönüne olan güveni.
+     * confidence ham skoru "boğa olasılığı"dır (50=nötr, yüksek=boğa, düşük=ayı).
+     * LONG için doğrudan bu skor, SHORT için ayı kanaati (100 - skor) döner.
+     * Böylece her iki yönde de "büyük sayı = güçlü sinyal" olur.
+     */
+    public int getDirectionalConfidence() {
+        return "SHORT".equals(direction) ? 100 - confidence : confidence;
+    }
+
     public int getLeverage() { return leverage; }
     public void setLeverage(int leverage) { this.leverage = leverage; }
 

@@ -26,7 +26,8 @@ public class ConsoleReportService {
         sb.append("╠══════════════════════════════════════════════════╣\n");
         sb.append(String.format(Locale.US, "║  Fiyat:     %.4f%n", signal.getCurrentPrice()));
         sb.append(String.format("║  Yön:       %s%s%s%n", directionColor, signal.getDirection(), reset));
-        sb.append(String.format("║  Güven:     %% %d%n", signal.getConfidence()));
+        sb.append(String.format("║  Güven:     %% %d (%s yönünde)%n",
+                signal.getDirectionalConfidence(), signal.getDirection()));
         sb.append(String.format("║  Kaldıraç:  %dx%n", signal.getLeverage()));
         sb.append("╠══════════════════════════════════════════════════╣\n");
         sb.append(String.format(Locale.US, "║  Giriş:     %.4f%n", signal.getEntry()));
@@ -63,10 +64,14 @@ public class ConsoleReportService {
                 case "SHORT" -> "🔴";
                 default -> "🟡";
             };
+            String sinyal = switch (s.getDirection()) {
+                case "LONG" -> "AL";
+                case "SHORT" -> "SAT";
+                default -> "BEKLE";
+            };
             sb.append(String.format(Locale.US, "│ %-8s │ %s %-6s │ %10.4f │  %% %-3d │  %-4dx  │ %-6s │%n",
                     s.getSymbol(), icon, s.getDirection(), s.getCurrentPrice(),
-                    s.getConfidence(), s.getLeverage(),
-                    s.getConfidence() >= 65 ? "AL" : (s.getConfidence() <= 35 ? "SAT" : "BEKLE")));
+                    s.getDirectionalConfidence(), s.getLeverage(), sinyal));
         }
         sb.append("└──────────┴──────────┴────────────┴────────┴────────┴────────┘\n");
         log.info(sb.toString());

@@ -260,12 +260,11 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
             }
 
             // ============ ADIM 6: Sonuçları Sırala ve Raporla ============
-            allSignals.sort((a, b) -> {
-                if (a.getDirection().equals(b.getDirection())) {
-                    return Integer.compare(b.getConfidence(), a.getConfidence());
-                }
-                return a.getDirection().compareTo(b.getDirection());
-            });
+            // Yöne göre güvene (kendi yönündeki kanaat gücü) göre sırala:
+            // güçlü LONG ve güçlü SHORT birlikte en üste çıkar, böylece
+            // yüksek güvenli SHORT'lar tablonun dibinde gizlenmez.
+            allSignals.sort((a, b) ->
+                    Integer.compare(b.getDirectionalConfidence(), a.getDirectionalConfidence()));
 
             // İlk 30 sinyali detaylı göster
             log.info("\n📊 EN GÜÇLÜ 30 SİNYAL:");
