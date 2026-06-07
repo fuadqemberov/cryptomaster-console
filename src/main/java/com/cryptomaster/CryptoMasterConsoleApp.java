@@ -13,6 +13,7 @@ import com.cryptomaster.model.Kline;
 import com.cryptomaster.model.TradingSignal;
 import com.cryptomaster.service.analysis.TechnicalAnalysisService;
 import com.cryptomaster.service.report.ConsoleReportService;
+import com.cryptomaster.service.scalp.ScalpScanRunner;
 import com.cryptomaster.service.strategy.SignalGenerationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +38,7 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
     private final BinanceFuturesClient binanceFuturesClient;
     private final LiquidationWebSocketClient liquidationWebSocketClient;
     private final FearGreedClient fearGreedClient;
+    private final ScalpScanRunner scalpScanRunner;
 
     private static final Set<String> EXCLUDED_SYMBOLS = new HashSet<>(List.of(
             "USDCUSDT", "BUSDUSDT", "DAIUSDT", "TUSDUSDT", "USDPUSDT",
@@ -50,7 +52,8 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
                                   AppConfig appConfig,
                                   BinanceFuturesClient binanceFuturesClient,
                                   LiquidationWebSocketClient liquidationWebSocketClient,
-                                  FearGreedClient fearGreedClient) {
+                                  FearGreedClient fearGreedClient,
+                                  ScalpScanRunner scalpScanRunner) {
         this.binanceRestClient = binanceRestClient;
         this.binanceWebSocketClient = binanceWebSocketClient;
         this.analysisService = analysisService;
@@ -60,6 +63,7 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
         this.binanceFuturesClient = binanceFuturesClient;
         this.liquidationWebSocketClient = liquidationWebSocketClient;
         this.fearGreedClient = fearGreedClient;
+        this.scalpScanRunner = scalpScanRunner;
     }
 
     public static void main(String[] args) {
@@ -87,6 +91,9 @@ public class CryptoMasterConsoleApp implements CommandLineRunner {
 
         // ============ ADIM 2: WebSocket bağlantısını başlat ============
         binanceWebSocketClient.connect(symbols);
+
+        // ⚡ Scalp tarayıcısını başlat (ana döngüden bağımsız, kendi hızlı thread'inde)
+        scalpScanRunner.start(symbols);
 
         // Likidasyon stream'ini başlat (tüm piyasa)
         if (appConfig.isDerivativesEnabled()) {

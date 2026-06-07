@@ -42,6 +42,23 @@ public class AppConfig {
     @Value("${cryptomaster.derivatives-top-count:80}")
     private int derivativesTopCount;
 
+    // ---- Scalp (5-10 dk hızlı al-sat) ayarları ----
+    @Value("${cryptomaster.scalp-enabled:true}")
+    private boolean scalpEnabled;
+
+    @Value("${cryptomaster.scalp-intervals:1m,5m,15m}")
+    private List<String> scalpIntervals;
+
+    // Slipajı önlemek için sadece en likit ilk N sembol scalp için taranır
+    @Value("${cryptomaster.scalp-top-count:40}")
+    private int scalpTopCount;
+
+    @Value("${cryptomaster.scalp-interval-seconds:45}")
+    private int scalpIntervalSeconds;
+
+    @Value("${cryptomaster.scalp-ohlc-limit:240}")
+    private int scalpOhlcLimit;
+
     // Getter'lar
     public int getTopCoinCount() { return topCoinCount; }
     public List<String> getIntervals() { return intervals; }
@@ -54,4 +71,9 @@ public class AppConfig {
     public String getBinanceFuturesWsBaseUrl() { return binanceFuturesWsBaseUrl; }
     public boolean isDerivativesEnabled() { return derivativesEnabled; }
     public int getDerivativesTopCount() { return derivativesTopCount; }
+    public boolean isScalpEnabled() { return scalpEnabled; }
+    public List<String> getScalpIntervals() { return scalpIntervals; }
+    public int getScalpTopCount() { return scalpTopCount; }
+    public int getScalpIntervalSeconds() { return scalpIntervalSeconds; }
+    public int getScalpOhlcLimit() { return scalpOhlcLimit; }
 }
